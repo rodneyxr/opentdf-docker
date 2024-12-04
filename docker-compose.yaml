@@ -1,0 +1,187 @@
+networks:
+  default:
+    name: opentdf_platform
+services:
+  keycloak:
+    volumes:
+      - ./keys:/keys:roZ
+    # - ./keys/localhost.crt:/etc/x509/tls/localhost.crt
+    # - ./keys/localhost.key:/etc/x509/tls/localhost.key
+    # - ./keys/ca.jks:/truststore/truststore.jks
+    # This is kc 24.0.1 with opentdf protocol mapper on board
+    image: keycloak/keycloak:25.0
+    restart: always
+    command:
+    - "start-dev"
+    - "--verbose"
+    - "-Djavax.net.ssl.trustStorePassword=password"
+    - "-Djavax.net.ssl.HostnameVerifier=AllowAll"
+    - "-Djavax.net.ssl.trustStore=/keys/ca.jks"
+    - "--spi-truststore-file-hostname-verification-policy=ANY"
+    environment:
+      KC_PROXY: edge
+      KC_HTTP_RELATIVE_PATH: /auth
+      KC_DB_VENDOR: postgres
+      KC_DB_URL_HOST: keycloakdb
+      KC_DB_URL_PORT: 5432
+      KC_DB_URL_DATABASE: keycloak
+      KC_DB_USERNAME: keycloak
+      KC_DB_PASSWORD: changeme
+      KC_HOSTNAME_STRICT: "false"
+      KC_HOSTNAME_STRICT_BACKCHANNEL: "false"
+      KC_HOSTNAME_STRICT_HTTPS: "false"
+      KC_HTTP_ENABLED: "true"
+      KC_HTTP_PORT: "8888"
+      KC_HTTPS_PORT: "8443"
+      KC_HTTP_MANAGEMENT_PORT: "9001"
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: changeme
+      #KC_HOSTNAME_URL: http://localhost:8888/auth
+      KC_FEATURES: "preview,token-exchange"
+      KC_HEALTH_ENABLED: "true"
+      KC_HTTPS_KEY_STORE_PASSWORD: "password"
+      KC_HTTPS_KEY_STORE_FILE: "/keys/ca.jks"
+      KC_HTTPS_CERTIFICATE_FILE: "/keys/localhost.crt"
+      KC_HTTPS_CERTIFICATE_KEY_FILE: "/keys/localhost.key"
+      KC_HTTPS_CLIENT_AUTH: "request"
+    ports:
+      - "9001:9001"
+      - "8888:8888"
+      - "8443:8443"
+    healthcheck:
+      test: 
+        - CMD-SHELL
+        - |
+          [ -f /tmp/HealthCheck.java ] || echo "public class HealthCheck { 
+            public static void main(String[] args) throws java.lang.Throwable { 
+              javax.net.ssl.HttpsURLConnection.setDefaultHostnameVerifier((hostname, session) -> true); 
+              javax.net.ssl.SSLContext sc = javax.net.ssl.SSLContext.getInstance(\"SSL\"); 
+              sc.init(null, new javax.net.ssl.TrustManager[]{ 
+                new javax.net.ssl.X509TrustManager() { 
+                  public java.security.cert.X509Certificate[] getAcceptedIssuers() { return null; } 
+                  public void checkClientTrusted(java.security.cert.X509Certificate[] certs, String authType) {} 
+                  public void checkServerTrusted(java.security.cert.X509Certificate[] certs, String authType) {} 
+                } 
+              }, new java.security.SecureRandom()); 
+              javax.net.ssl.HttpsURLConnection.setDefaultSSLSocketFactory(sc.getSocketFactory()); 
+              java.net.HttpURLConnection conn = (java.net.HttpURLConnection)new java.net.URL(args[0]).openConnection(); 
+              System.exit(java.net.HttpURLConnection.HTTP_OK == conn.getResponseCode() ? 0 : 1); 
+            } 
+          }" > /tmp/HealthCheck.java && java /tmp/HealthCheck.java https://localhost:9001/auth/health/live      
+      timeout: 10s
+      retries: 3
+      start_period: 2m
+    depends_on:
+      jks-converter:
+        condition: service_completed_successfully
+  keycloakdb:
+    image: postgres:15-alpine
+    restart: always
+    user: postgres
+    environment:
+      POSTGRES_PASSWORD: changeme
+      POSTGRES_USER: postgres
+      POSTGRES_DB: keycloak
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+  opentdfdb:
+    image: postgres:15-alpine
+    restart: always
+    user: postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: changeme
+      POSTGRES_DB: opentdf
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    ports:
+      - "5432:5432"
+  init-temp-keys:
+    image: alpine/openssl:latest
+    volumes:
+      - ./keys:/keys:Z
+      # - ./.github/scripts/init-temp-keys.sh:/init-temp-keys.sh:ro
+    entrypoint: ["/bin/sh"]
+    command:
+      - -c
+      - |
+        /usr/bin/openssl req -x509 -nodes -newkey RSA:2048 -subj "/CN=kas" -keyout "/keys/kas-private.pem" -out "/keys/kas-cert.pem" -days 365 && \
+        /usr/bin/openssl ecparam -name prime256v1 >ecparams.tmp && \
+        /usr/bin/openssl req -x509 -nodes -newkey ec:ecparams.tmp -subj "/CN=kas" -keyout "/keys/kas-ec-private.pem" -out "/keys/kas-ec-cert.pem" -days 365 && \
+        openssl req -x509 -nodes -newkey RSA:2048 -subj "/CN=ca" -keyout /keys/keycloak-ca-private.pem -out /keys/keycloak-ca.pem -days 365 && \
+        printf "subjectAltName=DNS:localhost,IP:127.0.0.1" > /keys/sanX509.conf && \
+        printf "[req]\ndistinguished_name=req_distinguished_name\n[req_distinguished_name]\n[alt_names]\nDNS.1=localhost\nIP.1=127.0.0.1" > /keys/req.conf && \
+        openssl req -new -nodes -newkey rsa:2048 -keyout /keys/localhost.key -out /keys/localhost.req -batch -subj "/CN=localhost" -config /keys/req.conf && \
+        openssl x509 -req -in /keys/localhost.req -CA /keys/keycloak-ca.pem  -CAkey /keys/keycloak-ca-private.pem -CAcreateserial -out /keys/localhost.crt -days 3650 -sha256 -extfile /keys/sanX509.conf && \
+        openssl req -new -nodes -newkey rsa:2048 -keyout /keys/sampleuser.key -out /keys/sampleuser.req -batch -subj "/CN=sampleuser" && \
+        openssl x509 -req -in /keys/sampleuser.req -CA /keys/keycloak-ca.pem  -CAkey /keys/keycloak-ca-private.pem -CAcreateserial -out /keys/sampleuser.crt -days 3650 && \
+        openssl pkcs12 -export -in /keys/keycloak-ca.pem -inkey /keys/keycloak-ca-private.pem -out /keys/ca.p12 -nodes -passout pass:password && \
+        chown -R 1000:0 /keys && \
+        chmod g=u -R /keys
+    restart: on-failure
+  jks-converter:
+    image: keycloak/keycloak:25.0
+    depends_on:
+      init-temp-keys:
+        condition: service_completed_successfully
+    volumes:
+      - ./keys:/keys:Z
+    entrypoint: ["/bin/sh"]
+    command:
+      - -c
+      - |
+        ls -lah /keys/ && \
+        keytool \
+        -importkeystore \
+        -srckeystore /keys/ca.p12 \
+        -srcstoretype PKCS12 \
+        -destkeystore /keys/ca.jks \
+        -deststoretype JKS \
+        -srcstorepass "password" \
+        -deststorepass "password" \
+        -noprompt
+    restart: on-failure
+  opentdf-keycloak-provisioner:
+    image: opentdf:latest
+    build:
+      context: ./platform
+      dockerfile: Dockerfile
+    command:
+      - provision
+      - keycloak
+      - --endpoint=http://keycloak:8888/auth
+      - --file=/keycloak_data.yaml
+    restart: on-failure
+    depends_on:
+      keycloak:
+        condition: service_healthy
+    volumes:
+      - ./platform/service/cmd/keycloak_data.yaml:/keycloak_data.yaml:ro
+  opentdf:
+    user: 0:0
+    image: opentdf:latest
+    build:
+      context: ./platform
+      dockerfile: Dockerfile
+    command:
+      - start
+    restart: always
+    depends_on:
+      opentdfdb:
+        condition: service_healthy
+      keycloak:
+        condition: service_healthy
+      init-temp-keys:
+        condition: service_completed_successfully
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./opentdf-docker.yaml:/opentdf.yaml:ro
+      - ./keys:/keys:ro
+    
