@@ -107,21 +107,40 @@ services:
     volumes:
       - ./keys:/keys:Z
       # - ./.github/scripts/init-temp-keys.sh:/init-temp-keys.sh:ro
-    entrypoint: ["/bin/sh"]
+    entrypoint: ["/bin/sh", "-c"]
     command:
-      - -c
       - |
-        /usr/bin/openssl req -x509 -nodes -newkey RSA:2048 -subj "/CN=kas" -keyout "/keys/kas-private.pem" -out "/keys/kas-cert.pem" -days 365 && \
+        if [ ! -f "/keys/kas-private.pem" ] || [ ! -f "/keys/kas-cert.pem" ]; then
+            /usr/bin/openssl req -x509 -nodes -newkey RSA:2048 -subj "/CN=kas" -keyout "/keys/kas-private.pem" -out "/keys/kas-cert.pem" -days 365
+        fi && \
         /usr/bin/openssl ecparam -name prime256v1 >ecparams.tmp && \
-        /usr/bin/openssl req -x509 -nodes -newkey ec:ecparams.tmp -subj "/CN=kas" -keyout "/keys/kas-ec-private.pem" -out "/keys/kas-ec-cert.pem" -days 365 && \
-        openssl req -x509 -nodes -newkey RSA:2048 -subj "/CN=ca" -keyout /keys/keycloak-ca-private.pem -out /keys/keycloak-ca.pem -days 365 && \
-        printf "subjectAltName=DNS:localhost,IP:127.0.0.1" > /keys/sanX509.conf && \
-        printf "[req]\ndistinguished_name=req_distinguished_name\n[req_distinguished_name]\n[alt_names]\nDNS.1=localhost\nIP.1=127.0.0.1" > /keys/req.conf && \
-        openssl req -new -nodes -newkey rsa:2048 -keyout /keys/localhost.key -out /keys/localhost.req -batch -subj "/CN=localhost" -config /keys/req.conf && \
-        openssl x509 -req -in /keys/localhost.req -CA /keys/keycloak-ca.pem  -CAkey /keys/keycloak-ca-private.pem -CAcreateserial -out /keys/localhost.crt -days 3650 -sha256 -extfile /keys/sanX509.conf && \
-        openssl req -new -nodes -newkey rsa:2048 -keyout /keys/sampleuser.key -out /keys/sampleuser.req -batch -subj "/CN=sampleuser" && \
-        openssl x509 -req -in /keys/sampleuser.req -CA /keys/keycloak-ca.pem  -CAkey /keys/keycloak-ca-private.pem -CAcreateserial -out /keys/sampleuser.crt -days 3650 && \
-        openssl pkcs12 -export -in /keys/keycloak-ca.pem -inkey /keys/keycloak-ca-private.pem -out /keys/ca.p12 -nodes -passout pass:password && \
+        if [ ! -f "/keys/kas-ec-private.pem" ] || [ ! -f "/keys/kas-ec-cert.pem" ]; then
+            /usr/bin/openssl req -x509 -nodes -newkey ec:ecparams.tmp -subj "/CN=kas" -keyout "/keys/kas-ec-private.pem" -out "/keys/kas-ec-cert.pem" -days 365
+        fi && \
+        if [ ! -f "/keys/keycloak-ca-private.pem" ] || [ ! -f "/keys/keycloak-ca.pem" ]; then
+            openssl req -x509 -nodes -newkey RSA:2048 -subj "/CN=ca" -keyout /keys/keycloak-ca-private.pem -out /keys/keycloak-ca.pem -days 365
+        fi && \
+        if [ ! -f "/keys/sanX509.conf" ]; then
+            printf "subjectAltName=DNS:localhost,IP:127.0.0.1" > /keys/sanX509.conf
+        fi && \
+        if [ ! -f "/keys/req.conf" ]; then
+            printf "[req]\ndistinguished_name=req_distinguished_name\n[req_distinguished_name]\n[alt_names]\nDNS.1=localhost\nIP.1=127.0.0.1" > /keys/req.conf
+        fi && \
+        if [ ! -f "/keys/localhost.key" ] || [ ! -f "/keys/localhost.req" ]; then
+            openssl req -new -nodes -newkey rsa:2048 -keyout /keys/localhost.key -out /keys/localhost.req -batch -subj "/CN=localhost" -config /keys/req.conf
+        fi && \
+        if [ ! -f "/keys/localhost.crt" ]; then
+            openssl x509 -req -in /keys/localhost.req -CA /keys/keycloak-ca.pem  -CAkey /keys/keycloak-ca-private.pem -CAcreateserial -out /keys/localhost.crt -days 3650 -sha256 -extfile /keys/sanX509.conf
+        fi && \
+        if [ ! -f "/keys/sampleuser.key" ]; then
+            openssl req -new -nodes -newkey rsa:2048 -keyout /keys/sampleuser.key -out /keys/sampleuser.req -batch -subj "/CN=sampleuser"
+        fi && \
+        if [ ! -f "/keys/sampleuser.crt" ]; then
+            openssl x509 -req -in /keys/sampleuser.req -CA /keys/keycloak-ca.pem  -CAkey /keys/keycloak-ca-private.pem -CAcreateserial -out /keys/sampleuser.crt -days 3650
+        fi && \
+        if [ ! -f "/keys/ca.p12" ]; then
+            openssl pkcs12 -export -in /keys/keycloak-ca.pem -inkey /keys/keycloak-ca-private.pem -out /keys/ca.p12 -nodes -passout pass:password
+        fi && \
         chown -R 1000:0 /keys && \
         chmod g=u -R /keys
     restart: on-failure
@@ -132,20 +151,21 @@ services:
         condition: service_completed_successfully
     volumes:
       - ./keys:/keys:Z
-    entrypoint: ["/bin/sh"]
+    entrypoint: ["/bin/sh", "-c"]
     command:
-      - -c
       - |
         ls -lah /keys/ && \
-        keytool \
-        -importkeystore \
-        -srckeystore /keys/ca.p12 \
-        -srcstoretype PKCS12 \
-        -destkeystore /keys/ca.jks \
-        -deststoretype JKS \
-        -srcstorepass "password" \
-        -deststorepass "password" \
-        -noprompt
+        if [ ! -f "/keys/ca.jks" ]; then
+          keytool \
+          -importkeystore \
+          -srckeystore /keys/ca.p12 \
+          -srcstoretype PKCS12 \
+          -destkeystore /keys/ca.jks \
+          -deststoretype JKS \
+          -srcstorepass "password" \
+          -deststorepass "password" \
+          -noprompt
+        fi
     restart: on-failure
   opentdf-keycloak-provisioner:
     image: opentdf:latest
