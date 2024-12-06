@@ -48,6 +48,7 @@ services:
       - "9001:9001"
       - "8888:8888"
       - "8443:8443"
+      - "8080:8080" # <-- opentdf service (piggybacks on keycloak network namespace)
     healthcheck:
       test: 
         - CMD-SHELL
@@ -199,9 +200,10 @@ services:
         condition: service_healthy
       init-temp-keys:
         condition: service_completed_successfully
-    ports:
-      - "8080:8080"
+    # ports:
+    #   - "8080:8080" # <-- opentdf service (piggybacks on keycloak network namespace)
     volumes:
       - ./opentdf-docker.yaml:/opentdf.yaml:ro
       - ./keys:/keys:ro
-    
+    network_mode: "service:keycloak" # <-- piggyback on keycloak network namespace
+      
